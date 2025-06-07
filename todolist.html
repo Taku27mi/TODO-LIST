@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>やることリスト</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Interフォントを適用 -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Custom modal styles (alternative to alert/confirm) */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            max-width: 400px;
+            width: 90%;
+            text-align: center;
+        }
+        .modal-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            margin-top: 20px;
+        }
+        .modal-buttons button {
+            padding: 10px 20px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        .modal-buttons .confirm-button {
+            background-color: #ef4444; /* red-500 */
+            color: white;
+        }
+        .modal-buttons .confirm-button:hover {
+            background-color: #dc2626; /* red-600 */
+        }
+        .modal-buttons .cancel-button {
+            background-color: #e5e7eb; /* gray-200 */
+            color: #4b5563; /* gray-700 */
+        }
+        .modal-buttons .cancel-button:hover {
+            background-color: #d1d5db; /* gray-300 */
+        }
+    </style>
+    <!-- React and ReactDOM CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel for JSX transformation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        // Firebase関連のモジュールをインポート
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, query, deleteDoc, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Canvas環境から提供されるグローバル変数を取得
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Firebaseアプリの初期化
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app); // Firestoreサービスも初期化
+
+        // 認証状態の監視と初期サインイン
+        onAuthStateChanged(auth, async (user) => {
+            if (!user) {
+                // ユーザーが認証されていない場合、カスタムトークンまたは匿名でサインイン
+                try {
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        console.log("Signed in with custom token.");
+                    } else {
+                        await signInAnonymously(auth);
+                        console.log("Signed in anonymously.");
+                    }
+                } catch (error) {
+                    console.error("Firebase authentication error:", error);
+                }
+            } else {
+                console.log("User is already signed in:", user.uid);
+            }
+        });
+
+        // ReactコンポーネントがアクセスできるようにFirebaseインスタンスをwindowオブジェクトにアタッチ
+        window.firebaseApp = app;
+        window.firebaseAuth = auth;
+        window.firebaseDb = db;
+        window.currentAppId = appId;
+
+        // Firestoreのモジュールもwindowにアタッチ（ReactコンポーネントのBabelスクリプトから利用するため）
+        window.firebaseFirestore = {
+            doc, collection, onSnapshot, setDoc, updateDoc, query, deleteDoc, getDocs, writeBatch
+        };
+    </script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Firebase Firestoreのモジュールをwindowオブジェクトから取得
+        const { doc, collection, onSnapshot, setDoc, updateDoc, query, deleteDoc, getDocs, writeBatch } = window.firebaseFirestore;
+
+        // カスタム確認モーダルコンポーネント
+        const ConfirmationModal = ({ message, onConfirm, onCancel }) => {
+            return (
+                <div className="modal-overlay">
+                    <div className="modal-content">
+                        <p className="text-lg font-semibold text-gray-800">{message}</p>
+                        <div className="modal-buttons">
+                            <button onClick={onConfirm} className="confirm-button">はい</button>
+                            <button onClick={onCancel} className="cancel-button">いいえ</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // メインアプリケーションコンポーネント
+        const App = () => {
+            // State to manage the list of tasks. Each task has an ID, text, input date, due date, and status.
+            const [todos, setTodos] = React.useState([]);
+            // State to manage the text for a new task.
+            const [newItemText, setNewItemText] = React.useState('');
+            // State to manage the input date for a new task (initial value is today's date).
+            const [newInputDate, setNewInputDate] = React.useState(new Date().toISOString().split('T')[0]);
+            // State to manage the due date for a new task (initial value is today's date).
+            const [newDueDate, setNewDueDate] = React.useState(new Date().toISOString().split('T')[0]);
+
+            // State to manage Firebase DB and Auth instances, and user ID.
+            const [db, setDb] = React.useState(null);
+            const [auth, setAuth] = React.useState(null);
+            const [userId, setUserId] = React.useState(null);
+            // Flag to indicate when Firebase is ready.
+            const [isFirebaseReady, setIsFirebaseReady] = React.useState(false);
+
+            // State for custom confirmation modal
+            const [showModal, setShowModal] = React.useState(false);
+            const [modalMessage, setModalMessage] = React.useState('');
+            const [modalAction, setModalAction] = React.useState(null); // Function to call on confirm
+
+            // Initialize Firebase and observe authentication state.
+            React.useEffect(() => {
+                // Get Firebase instances from the window object and set them in state.
+                if (window.firebaseApp && window.firebaseAuth && window.firebaseDb) {
+                    setDb(window.firebaseDb);
+                    setAuth(window.firebaseAuth);
+
+                    // Observe authentication state changes.
+                    const unsubscribe = window.firebaseAuth.onAuthStateChanged(user => {
+                        if (user) {
+                            setUserId(user.uid);
+                            setIsFirebaseReady(true); // Firebase is ready when user is authenticated.
+                            console.log("Firebase Auth State Changed: User is signed in:", user.uid);
+                        } else {
+                            setUserId(null);
+                            setIsFirebaseReady(true); // App can still run even if not authenticated.
+                            console.log("Firebase Auth State Changed: No user is signed in.");
+                        }
+                    });
+                    return () => unsubscribe(); // Cleanup function.
+                } else {
+                    console.warn("Firebase global objects not found. Data persistence will not work.");
+                }
+            }, []);
+
+            // Load data from Firestore when Firebase is ready.
+            React.useEffect(() => {
+                // Load data only if Firebase is ready, and DB/Auth/User ID are available.
+                if (isFirebaseReady && db && auth && userId) {
+                    // Define the Firestore collection path (using user ID for private data).
+                    const todosCollectionRef = collection(db, `artifacts/${window.currentAppId}/users/${userId}/todos`);
+                    const q = query(todosCollectionRef); // Query all documents.
+
+                    // Subscribe to real-time updates with onSnapshot.
+                    const unsubscribe = onSnapshot(q, (snapshot) => {
+                        const loadedTodos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                        setTodos(loadedTodos); // Update state.
+                        console.log("Todos loaded from Firestore:", loadedTodos);
+                    }, (error) => {
+                        console.error("Error fetching todos from Firestore:", error);
+                        // Handle errors (e.g., display a message to the user).
+                    });
+
+                    return () => unsubscribe(); // Clean up the listener when the component unmounts.
+                } else if (isFirebaseReady && (!userId || !db || !auth)) {
+                    // If Firebase is ready but user ID is not available (e.g., anonymous sign-in not completed), clear todos.
+                    setTodos([]);
+                    console.log("Firestore not fully ready or user not authenticated, initializing with empty todos.");
+                }
+            }, [isFirebaseReady, db, auth, userId]); // Add Firebase-related states to the dependency array.
+
+            // Handler function to add a new task.
+            const handleAddItem = async () => {
+                if (newItemText.trim() === '' || !db || !userId) {
+                    // Do nothing if input text is empty or Firebase is not ready.
+                    return;
+                }
+
+                // Create a new task object.
+                const newItem = {
+                    id: Date.now().toString(), // Firestore document IDs are strings, so use toString().
+                    text: newItemText,
+                    inputDate: newInputDate,
+                    dueDate: newDueDate,
+                    status: 'todo', // Initial status is "todo".
+                };
+
+                try {
+                    // Add a new document to Firestore (setDoc allows specifying ID).
+                    const docRef = doc(db, `artifacts/${window.currentAppId}/users/${userId}/todos`, newItem.id);
+                    await setDoc(docRef, newItem);
+                    console.log("Document added to Firestore with ID: ", newItem.id);
+                    // No need to call setTodos directly here, as the onSnapshot listener will automatically update the state.
+                } catch (e) {
+                    console.error("Error adding document to Firestore: ", e);
+                    // Error handling.
+                }
+
+                // Clear input fields.
+                setNewItemText('');
+                // Reset date fields to today's date.
+                setNewInputDate(new Date().toISOString().split('T')[0]);
+                setNewDueDate(new Date().toISOString().split('T')[0]);
+            };
+
+            // Handler function to toggle the completion status of a task.
+            const handleToggleStatus = async (id) => {
+                if (!db || !userId) {
+                    return;
+                }
+
+                const todoToUpdate = todos.find(todo => todo.id === id);
+                if (!todoToUpdate) return; // Do nothing if the task to update is not found.
+
+                const newStatus = todoToUpdate.status === 'todo' ? 'completed' : 'todo';
+
+                try {
+                    // Update the document in Firestore.
+                    const docRef = doc(db, `artifacts/${window.currentAppId}/users/${userId}/todos`, id);
+                    await updateDoc(docRef, { status: newStatus });
+                    console.log(`Document ${id} status updated to ${newStatus} in Firestore.`);
+                    // No need to call setTodos directly here, as the onSnapshot listener will automatically update the state.
+                } catch (e) {
+                    console.error("Error updating document in Firestore: ", e);
+                    // Error handling.
+                }
+            };
+
+            // Helper function to determine if a task is overdue.
+            const isOverdue = (dueDate) => {
+                const today = new Date();
+                today.setHours(0, 0, 0, 0); // Compare dates only, ignoring time.
+                const due = new Date(dueDate);
+                due.setHours(0, 0, 0, 0); // Compare dates only, ignoring time.
+                return due < today;
+            };
+
+            // Handler function to share ALL todo items via LINE.
+            const handleShareAllTodosLine = () => {
+                // Filter tasks to display in the "Todo" list.
+                const todoItemsForShare = todos.filter((todo) => todo.status === 'todo');
+
+                if (todoItemsForShare.length === 0) {
+                    // Use custom modal for messages instead of alert
+                    setModalMessage("共有する「やるべきこと」がありません。");
+                    setModalAction(() => () => setShowModal(false)); // Close modal on OK
+                    setShowModal(true);
+                    return;
+                }
+
+                let shareText = "【やるべきことリスト】\n\n";
+                todoItemsForShare.forEach((todo, index) => {
+                    shareText += `${index + 1}. ${todo.text} (期限: ${todo.dueDate})`;
+                    if (isOverdue(todo.dueDate)) {
+                        shareText += " 🔴期限超過";
+                    }
+                    shareText += "\n";
+                });
+
+                // URLエンコード
+                const encodedText = encodeURIComponent(shareText);
+                // LINE共有のURLスキーム
+                const lineShareUrl = `https://line.me/R/share?text=${encodedText}`;
+
+                // 新しいタブでLINE共有URLを開く
+                window.open(lineShareUrl, '_blank');
+            };
+
+            // Handler to reset "やるべきこと" tasks
+            const handleResetTodos = async () => {
+                if (!db || !userId) return;
+
+                // Show confirmation modal
+                setModalMessage("「やるべきこと」リストの全項目をリセットしますか？この操作は元に戻せません。");
+                setModalAction(() => async () => {
+                    setShowModal(false); // Close modal
+
+                    const todosCollectionRef = collection(db, `artifacts/${window.currentAppId}/users/${userId}/todos`);
+                    const q = query(todosCollectionRef);
+                    const snapshot = await getDocs(q);
+                    
+                    const batch = writeBatch(db);
+                    let hasDeleted = false;
+
+                    snapshot.forEach((document) => {
+                        if (document.data().status === 'todo') {
+                            batch.delete(doc(db, `artifacts/${window.currentAppId}/users/${userId}/todos`, document.id));
+                            hasDeleted = true;
+                        }
+                    });
+
+                    if (hasDeleted) {
+                        try {
+                            await batch.commit();
+                            console.log("All 'todo' tasks reset from Firestore.");
+                        } catch (e) {
+                            console.error("Error resetting 'todo' tasks from Firestore: ", e);
+                            setModalMessage("リセット中にエラーが発生しました。");
+                            setModalAction(() => () => setShowModal(false));
+                            setShowModal(true);
+                        }
+                    } else {
+                        setModalMessage("「やるべきこと」リストにリセットする項目はありませんでした。");
+                        setModalAction(() => () => setShowModal(false));
+                        setShowModal(true);
+                    }
+                });
+                setShowModal(true);
+            };
+
+            // Handler to reset "完了したもの" tasks
+            const handleResetCompleted = async () => {
+                if (!db || !userId) return;
+
+                // Show confirmation modal
+                setModalMessage("「完了したもの」リストの全項目をリセットしますか？この操作は元に戻せません。");
+                setModalAction(() => async () => {
+                    setShowModal(false); // Close modal
+
+                    const todosCollectionRef = collection(db, `artifacts/${window.currentAppId}/users/${userId}/todos`);
+                    const q = query(todosCollectionRef);
+                    const snapshot = await getDocs(q);
+                    
+                    const batch = writeBatch(db);
+                    let hasDeleted = false;
+
+                    snapshot.forEach((document) => {
+                        if (document.data().status === 'completed') {
+                            batch.delete(doc(db, `artifacts/${window.currentAppId}/users/${userId}/todos`, document.id));
+                            hasDeleted = true;
+                        }
+                    });
+
+                    if (hasDeleted) {
+                        try {
+                            await batch.commit();
+                            console.log("All 'completed' tasks reset from Firestore.");
+                        } catch (e) {
+                            console.error("Error resetting 'completed' tasks from Firestore: ", e);
+                            setModalMessage("リセット中にエラーが発生しました。");
+                            setModalAction(() => () => setShowModal(false));
+                            setShowModal(true);
+                        }
+                    } else {
+                        setModalMessage("「完了したもの」リストにリセットする項目はありませんでした。");
+                        setModalAction(() => () => setShowModal(false));
+                        setShowModal(true);
+                    }
+                });
+                setShowModal(true);
+            };
+
+            // Filter tasks to display in the "Todo" list.
+            const todoItems = todos.filter((todo) => todo.status === 'todo');
+            // Filter tasks to display in the "Completed" list.
+            const completedItems = todos.filter((todo) => todo.status === 'completed');
+
+            return (
+                <div className="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+                    <div className="bg-white p-6 rounded-lg shadow-xl w-full max-w-md">
+                        <h1 className="text-3xl font-extrabold text-gray-800 text-center mb-6">やることリスト</h1>
+
+                        {/* Display User ID (for debugging, mandatory requirement) */}
+                        {userId && (
+                            <div className="text-center text-gray-600 text-sm mb-4 p-2 bg-gray-100 rounded-md">
+                                ユーザーID: <span className="font-mono break-all">{userId}</span>
+                            </div>
+                        )}
+
+                        {/* New task input section */}
+                        <div className="mb-6 space-y-3">
+                            <input
+                                type="text"
+                                className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                placeholder="新しいやるべきこと"
+                                value={newItemText}
+                                onChange={(e) => setNewItemText(e.target.value)}
+                                onKeyPress={(e) => {
+                                    // Add task when Enter key is pressed.
+                                    if (e.key === 'Enter') {
+                                        handleAddItem();
+                                    }
+                                }}
+                            />
+                            <div className="flex space-x-3 mt-3">
+                                {/* Input Date section */}
+                                <div className="flex-1">
+                                    <label htmlFor="inputDate" className="block text-sm font-medium text-gray-700 mb-1">入力日</label>
+                                    <input
+                                        id="inputDate"
+                                        type="date"
+                                        className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                        value={newInputDate}
+                                        onChange={(e) => setNewInputDate(e.target.value)}
+                                    />
+                                </div>
+                                {/* Due Date section */}
+                                <div className="flex-1">
+                                    <label htmlFor="dueDate" className="block text-sm font-medium text-gray-700 mb-1">期限</label>
+                                    <input
+                                        id="dueDate"
+                                        type="date"
+                                        className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 transition duration-200"
+                                        value={newDueDate}
+                                        onChange={(e) => setNewDueDate(e.target.value)}
+                                    />
+                                </div>
+                            </div>
+                            <button
+                                onClick={handleAddItem}
+                                className="w-full bg-blue-600 text-white p-3 rounded-md hover:bg-blue-700 transition duration-200 shadow-md font-semibold mt-4"
+                            >
+                                追加
+                            </button>
+                            {/* 「すべてのやるべきことをLINEで共有」ボタン */}
+                            <button
+                                onClick={handleShareAllTodosLine}
+                                className="w-full bg-green-500 text-white p-3 rounded-md hover:bg-green-600 transition duration-200 shadow-md font-semibold mt-3"
+                            >
+                                すべてのやるべきことをLINEで共有
+                            </button>
+                        </div>
+
+                        {/* やるべきことリスト */}
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-2xl font-bold text-gray-700">やるべきこと</h2>
+                            <button
+                                onClick={handleResetTodos}
+                                className="bg-red-500 text-white text-sm px-3 py-1 rounded-md hover:bg-red-600 transition duration-200 shadow-sm"
+                            >
+                                リセット
+                            </button>
+                        </div>
+                        <hr className="mb-4" /> {/* 見出しとリストの間の線 */}
+                        {todoItems.length === 0 ? (
+                            <p className="text-gray-500 text-center py-4">やるべきことはありません。</p>
+                        ) : (
+                            <ul className="space-y-3 mb-6">
+                                {todoItems.map((todo) => (
+                                    <li
+                                        key={todo.id}
+                                        className="flex flex-wrap items-center justify-between bg-gray-50 p-3 rounded-md shadow-sm border border-gray-200"
+                                    >
+                                        <div className="flex items-center flex-grow">
+                                            <input
+                                                type="checkbox"
+                                                className="form-checkbox h-5 w-5 text-blue-600 rounded-sm focus:ring-blue-500 transition duration-200"
+                                                checked={false} // Always unchecked for "todo" status.
+                                                onChange={() => handleToggleStatus(todo.id)}
+                                            />
+                                            <span className="ml-3 text-lg text-gray-800 font-medium break-words max-w-[calc(100%-3rem)] sm:max-w-none">
+                                                {todo.text}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center space-x-2 mt-2 sm:mt-0 ml-auto">
+                                            <span className="text-sm text-gray-600 whitespace-nowrap">
+                                                期限: {todo.dueDate}
+                                            </span>
+                                            {isOverdue(todo.dueDate) && (
+                                                <span className="text-red-600 font-bold text-sm ml-2 whitespace-nowrap">
+                                                    期限超過
+                                                </span>
+                                            )}
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+
+                        {/* Completed list */}
+                        <div className="flex justify-between items-center mb-4 mt-8">
+                            <h2 className="text-2xl font-bold text-gray-700">完了したもの</h2>
+                            <button
+                                onClick={handleResetCompleted}
+                                className="bg-red-500 text-white text-sm px-3 py-1 rounded-md hover:bg-red-600 transition duration-200 shadow-sm"
+                            >
+                                リセット
+                            </button>
+                        </div>
+                        <hr className="mb-4" /> {/* 見出しとリストの間の線 */}
+                        {completedItems.length === 0 ? (
+                            <p className="text-gray-500 text-center py-4">完了したタスクはありません。</p>
+                        ) : (
+                            <ul className="space-y-3">
+                                {completedItems.map((todo) => (
+                                    <li
+                                        key={todo.id}
+                                        className="flex flex-wrap items-center justify-between bg-green-50 p-3 rounded-md shadow-sm border border-green-200"
+                                    >
+                                        <div className="flex items-center flex-grow">
+                                            <input
+                                                type="checkbox"
+                                                className="form-checkbox h-5 w-5 text-green-600 rounded-sm focus:ring-green-500 transition duration-200"
+                                                checked={true} // Always checked for "completed" status.
+                                                onChange={() => handleToggleStatus(todo.id)}
+                                            />
+                                            <span className="ml-3 text-lg text-green-800 font-medium line-through break-words max-w-[calc(100%-3rem)] sm:max-w-none">
+                                                {todo.text}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center space-x-2 mt-2 sm:mt-0 ml-auto">
+                                        </div>
+                                    </li>
+                                ))}
+                            </ul>
+                        )}
+                    </div>
+
+                    {/* Custom Confirmation Modal */}
+                    {showModal && (
+                        <ConfirmationModal
+                            message={modalMessage}
+                            onConfirm={modalAction}
+                            onCancel={() => setShowModal(false)}
+                        />
+                    )}
+                </div>
+            );
+        };
+
+        // Render the React app to the 'root' element in HTML.
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
